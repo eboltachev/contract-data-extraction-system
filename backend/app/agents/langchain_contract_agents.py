@@ -94,7 +94,9 @@ class ContractToolbox:
 class LangChainContractMultiAgentSystem:
     """Coordinator + specialist subagents implemented with LangChain model/tool APIs."""
 
-    def __init__(self) -> None:
+    def __init__(self, job_id: str | None = None, logger=None) -> None:
+        self.job_id = job_id
+        self.logger = logger
         self.model = ChatOpenAI(
             model=settings.LLM_MODEL,
             base_url=settings.LITELLM_BASE_URL,
@@ -104,6 +106,10 @@ class LangChainContractMultiAgentSystem:
             max_retries=0,
         ).bind(response_format={"type": "json_object"})
         self.max_iterations = settings.AGENT_MAX_ITERATIONS
+
+    async def log_step(self, agent: str, action: str, status: str = "started", **data: Any) -> None:
+        if self.logger is not None:
+            await self.logger.log(job_id=self.job_id, agent=agent, action=action, status=status, **data)
 
     async def _ainvoke_json(self, system: str, payload: dict[str, Any]) -> dict[str, Any]:
         response = await asyncio.wait_for(
@@ -175,19 +181,28 @@ class LangChainContractMultiAgentSystem:
         evidence = EvidencePack(criterion=criterion, fragments=fragments)
         toolbox = ContractToolbox(evidence)
         try:
+            await self.log_step("CriteriaPlanningAgent", "plan_criterion", criterion=criterion)
             plan = await self.plan(criterion, evidence)
+            await self.log_step("CriteriaPlanningAgent", "plan_criterion", status="completed", criterion=criterion, sub_questions=len(plan.get("sub_questions") or []))
+            await self.log_step("RetrievalAgent", "retrieve_evidence", criterion=criterion)
             evidence_text = await self.retrieve(criterion, plan, toolbox)
+            await self.log_step("RetrievalAgent", "retrieve_evidence", status="completed", criterion=criterion, evidence_chars=len(evidence_text))
             extracted: dict[str, Any] | None = None
             for _ in range(max(1, self.max_iterations)):
+                await self.log_step("ExtractionAgent", "extract_criterion", criterion=criterion)
                 extracted = await self.extract(criterion, plan, evidence_text, toolbox)
+                await self.log_step("ExtractionAgent", "extract_criterion", status="completed", criterion=criterion, confidence=extracted.get("confidence"))
                 value = str(extracted.get("value") or "").strip()
                 confidence = float(extracted.get("confidence") or 0)
                 if value and value != NOT_FOUND and confidence >= 0.55:
                     break
                 # Iterative data access: ask retrieval to broaden the context and retry.
                 evidence_text = toolbox.read_all_evidence()
+            await self.log_step("ValidationAgent", "validate_criterion", criterion=criterion)
             validated = await self.validate(criterion, extracted or {}, evidence_text)
+            await self.log_step("ValidationAgent", "validate_criterion", status="completed", criterion=criterion, confidence=validated.get("confidence"))
         except Exception as exc:  # noqa: BLE001 - pipeline should return controlled value per criterion
+            await self.log_step("ExtractionAgent", "extract_criterion", status="failed", criterion=criterion, error=type(exc).__name__)
             validated = {
                 "criterion": criterion,
                 "value": f"Не найдено в договоре. Требует ручной проверки. LLM/tool pipeline unavailable: {type(exc).__name__}",
@@ -220,7 +235,71 @@ class LangChainContractMultiAgentSystem:
                     break
         return matched[:3] or fragments[:3]
 
+
+    def _union_fragments(self, retrievals: dict[str, list[DocumentFragment]]) -> list[DocumentFragment]:
+        seen: set[tuple[str | None, str | None, str]] = set()
+        unique: list[DocumentFragment] = []
+        for fragments in retrievals.values():
+            for fragment in fragments:
+                key = (fragment.section, fragment.clause, fragment.text)
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(fragment)
+        return unique
+
+    async def batch_extract(self, retrievals: dict[str, list[DocumentFragment]]) -> list[ExtractionResult]:
+        criteria = list(retrievals.keys())
+        evidence = EvidencePack(criterion="; ".join(criteria), fragments=self._union_fragments(retrievals))
+        await self.log_step("ExtractionAgent", "batch_extract", criteria_count=len(criteria), evidence_fragments=len(evidence.fragments))
+        data = await self._ainvoke_json(
+            """
+Ты LeadContractExtractionAgent. Извлеки значения сразу для всех критериев из коммерческого договора.
+Используй только evidence. Не копируй большие фрагменты; синтезируй точные, компактные ответы для Excel.
+Если критерий требует список, верни структурированный список с переносами строк. Если есть даты/номера/реквизиты,
+извлеки их точно. Если нужно вычисление, выполни его по данным договора и кратко укажи формулу в reasoning_summary.
+Верни строгий JSON: {"results": [{"criterion": string, "value": string, "normalized_value": string|null,
+"confidence": number, "source_quotes": string[], "reasoning_summary": string}]}.
+""".strip(),
+            {"criteria": criteria, "evidence": evidence.as_text(30000)},
+        )
+        by_criterion: dict[str, dict[str, Any]] = {}
+        for item in data.get("results") or []:
+            criterion = str(item.get("criterion") or "").strip()
+            if criterion:
+                by_criterion[criterion] = item
+        results: list[ExtractionResult] = []
+        for criterion, fragments in retrievals.items():
+            item = by_criterion.get(criterion) or {}
+            value = str(item.get("value") or NOT_FOUND).strip() or NOT_FOUND
+            quotes = [str(q) for q in item.get("source_quotes") or []]
+            results.append(
+                ExtractionResult(
+                    criterion=criterion,
+                    value=value,
+                    normalized_value=item.get("normalized_value"),
+                    confidence=float(item.get("confidence") or 0),
+                    source_fragments=self._match_sources(quotes, fragments),
+                    reasoning_summary=str(item.get("reasoning_summary") or "Ответ синтезирован batch multi-agent extraction."),
+                )
+            )
+        await self.log_step("ExtractionAgent", "batch_extract", status="completed", extracted=sum(1 for r in results if r.value != NOT_FOUND))
+        return results
+
     async def extract_many(self, retrievals: dict[str, list[DocumentFragment]]) -> list[ExtractionResult]:
+        try:
+            batch_results = await asyncio.wait_for(
+                self.batch_extract(retrievals),
+                timeout=settings.EXTRACTION_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001 - fallback to per-criterion agents
+            await self.log_step("ExtractionAgent", "batch_extract", status="failed", error=type(exc).__name__)
+            batch_results = []
+
+        complete = {r.criterion: r for r in batch_results if r.value and r.value != NOT_FOUND and r.confidence >= 0.45}
+        missing = {criterion: fragments for criterion, fragments in retrievals.items() if criterion not in complete}
+        if not missing:
+            return [complete[criterion] for criterion in retrievals.keys()]
+
         semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_LLM_REQUESTS)
 
         async def guarded(criterion: str, fragments: list[DocumentFragment]) -> ExtractionResult:
@@ -231,6 +310,7 @@ class LangChainContractMultiAgentSystem:
                         timeout=settings.EXTRACTION_TIMEOUT_SECONDS,
                     )
                 except asyncio.TimeoutError:
+                    await self.log_step("ExtractionAgent", "extract_criterion", status="failed", criterion=criterion, error="TimeoutError")
                     return ExtractionResult(
                         criterion=criterion,
                         value="Не найдено в договоре. Требует ручной проверки. Extraction timeout exceeded.",
@@ -240,4 +320,6 @@ class LangChainContractMultiAgentSystem:
                         reasoning_summary="Превышен лимит времени извлечения для критерия.",
                     )
 
-        return await asyncio.gather(*(guarded(criterion, fragments) for criterion, fragments in retrievals.items()))
+        fallback_results = await asyncio.gather(*(guarded(criterion, fragments) for criterion, fragments in missing.items()))
+        merged = {**complete, **{r.criterion: r for r in fallback_results}}
+        return [merged[criterion] for criterion in retrievals.keys()]

@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_LLM_REQUESTS: int = 8
     MAX_UPLOAD_SIZE_MB: int = 50
     JOB_STORAGE_DIR: str = "/storage/jobs"
-    LLM_TIMEOUT_SECONDS: int = 45
+    LLM_TIMEOUT_SECONDS: int = 120
     STAGE_TIMEOUT_SECONDS: int = 900
-    EXTRACTION_TIMEOUT_SECONDS: int = 600
+    EXTRACTION_TIMEOUT_SECONDS: int = 900
     SSE_HEARTBEAT_SECONDS: int = 10
 settings = Settings()

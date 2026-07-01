@@ -20,6 +20,7 @@ class Pipeline:
     async def stage(self, job, agent, action, progress, logger, fn):
         job.status=JobStatus.processing; job.progress=progress; job.current_action=action; await self.repo.save(job)
         await progress_service.publish(job.job_id, progress=progress, status=job.status, agent=agent, action=action)
+        await logger.log(job_id=job.job_id, agent=agent, action=action, status="started", progress=progress)
         start=time.perf_counter()
         try:
             res=await asyncio.wait_for(fn(), timeout=settings.STAGE_TIMEOUT_SECONDS); await logger.log(job_id=job.job_id, agent=agent, action=action, status="completed", duration_ms=int((time.perf_counter()-start)*1000)); return res
@@ -34,7 +35,7 @@ class Pipeline:
             _,_,_,criteria=read_criteria(template_path)
             plans=await self.stage(job,"CriteriaPlanningAgent","Планирование извлечения критериев",35,logger,lambda: CriteriaPlanningAgent().run(criteria))
             retrievals=await self.stage(job,"RetrievalAgent","Поиск релевантных фрагментов",50,logger,lambda: RetrievalAgent().run(plans, parsed))
-            results=await self.stage(job,"ExtractionAgent","Извлечение значений критериев",70,logger,lambda: ExtractionAgent().run(retrievals))
+            results=await self.stage(job,"ExtractionAgent","Извлечение значений критериев",70,logger,lambda: ExtractionAgent().run(retrievals, job_id=job.job_id, logger=logger))
             valid=await self.stage(job,"ValidationAgent","Проверка извлеченных значений",85,logger,lambda: ValidationAgent().run(results))
             out=root/"output"/output_filename(contract_path.name)
             await self.stage(job,"ExcelFillingAgent","Заполнение Excel-шаблона",95,logger,lambda: ExcelFillingAgent().run(template_path, out, valid))
