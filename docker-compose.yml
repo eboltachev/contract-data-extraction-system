@@ -1,7 +1,8 @@
 services:
   backend:
     build: ./backend
-    env_file: .env.example
+    env_file:
+      - .env
     expose:
       - "8000"
     volumes:
