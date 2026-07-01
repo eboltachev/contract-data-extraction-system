@@ -1,0 +1,1 @@
+import {downloadUrl} from '../api/client'; export function DownloadCard({jobId,ready}:{jobId:string|null;ready:boolean}){return <div className="card center"><a className={ready?'btn':'btn disabled'} href={ready&&jobId?downloadUrl(jobId):undefined}>Скачать готовый .xlsx</a></div>}

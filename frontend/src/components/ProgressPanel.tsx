@@ -1,0 +1,1 @@
+export function ProgressPanel({progress,status,action,error}:{progress:number;status:string;action:string;error?:string|null}){return <div className="card"><div className="row"><b>Статус: {status}</b><b>{progress}%</b></div><div className="bar"><div style={{width:`${progress}%`}}/></div><p>{action}</p>{error&&<p className="error">{error}</p>}</div>}

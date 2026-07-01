@@ -1,0 +1,17 @@
+services:
+  backend:
+    build: ./backend
+    env_file:
+      - .env
+    expose:
+      - "8000"
+    volumes:
+      - job_storage:/storage/jobs
+  frontend:
+    build: ./frontend
+    ports:
+      - "6002:80"
+    depends_on:
+      - backend
+volumes:
+  job_storage:
