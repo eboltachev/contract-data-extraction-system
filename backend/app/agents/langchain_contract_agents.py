@@ -106,11 +106,14 @@ class LangChainContractMultiAgentSystem:
         self.max_iterations = settings.AGENT_MAX_ITERATIONS
 
     async def _ainvoke_json(self, system: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = await self.model.ainvoke(
-            [
-                SystemMessage(content=system),
-                HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
-            ]
+        response = await asyncio.wait_for(
+            self.model.ainvoke(
+                [
+                    SystemMessage(content=system),
+                    HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
+                ]
+            ),
+            timeout=settings.LLM_TIMEOUT_SECONDS,
         )
         content = response.content if isinstance(response.content, str) else json.dumps(response.content, ensure_ascii=False)
         return json.loads(content or "{}")
@@ -222,6 +225,19 @@ class LangChainContractMultiAgentSystem:
 
         async def guarded(criterion: str, fragments: list[DocumentFragment]) -> ExtractionResult:
             async with semaphore:
-                return await self.extract_one(criterion, fragments)
+                try:
+                    return await asyncio.wait_for(
+                        self.extract_one(criterion, fragments),
+                        timeout=settings.EXTRACTION_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    return ExtractionResult(
+                        criterion=criterion,
+                        value="Не найдено в договоре. Требует ручной проверки. Extraction timeout exceeded.",
+                        normalized_value=None,
+                        confidence=0.0,
+                        source_fragments=fragments[:3],
+                        reasoning_summary="Превышен лимит времени извлечения для критерия.",
+                    )
 
         return await asyncio.gather(*(guarded(criterion, fragments) for criterion, fragments in retrievals.items()))

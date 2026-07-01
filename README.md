@@ -20,7 +20,7 @@ UI: <http://localhost:6002>
 
 ## Переменные окружения
 
-См. `.env.example`: LiteLLM endpoint, модели LLM/embeddings/reranker, лимиты итераций, конкурентности, размера загрузки и директория хранения задач. Для Docker Compose создайте `.env`; backend получает эти значения через `env_file: .env`.
+См. `.env.example`: LiteLLM endpoint, модели LLM/embeddings/reranker, лимиты итераций, конкурентности, размера загрузки, таймауты `LLM_TIMEOUT_SECONDS`/`STAGE_TIMEOUT_SECONDS`/`EXTRACTION_TIMEOUT_SECONDS`/`SSE_HEARTBEAT_SECONDS` и директория хранения задач. Для Docker Compose создайте `.env`; backend получает эти значения через `env_file: .env`.
 
 ## Формат входных файлов
 

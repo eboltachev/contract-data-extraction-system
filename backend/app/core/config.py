@@ -12,4 +12,7 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = 50
     JOB_STORAGE_DIR: str = "/storage/jobs"
     LLM_TIMEOUT_SECONDS: int = 45
+    STAGE_TIMEOUT_SECONDS: int = 900
+    EXTRACTION_TIMEOUT_SECONDS: int = 600
+    SSE_HEARTBEAT_SECONDS: int = 10
 settings = Settings()

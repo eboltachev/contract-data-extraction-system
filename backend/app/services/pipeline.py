@@ -1,6 +1,7 @@
-import time, shutil
+import asyncio, time, shutil
 from pathlib import Path
 from app.domain.jobs import JobStatus
+from app.core.config import settings
 from app.infrastructure.parsers.doc_converter import convert_with_libreoffice
 from app.infrastructure.parsers.excel_template import read_criteria
 from app.infrastructure.repositories.file_repository import output_filename
@@ -21,7 +22,7 @@ class Pipeline:
         await progress_service.publish(job.job_id, progress=progress, status=job.status, agent=agent, action=action)
         start=time.perf_counter()
         try:
-            res=await fn(); await logger.log(job_id=job.job_id, agent=agent, action=action, status="completed", duration_ms=int((time.perf_counter()-start)*1000)); return res
+            res=await asyncio.wait_for(fn(), timeout=settings.STAGE_TIMEOUT_SECONDS); await logger.log(job_id=job.job_id, agent=agent, action=action, status="completed", duration_ms=int((time.perf_counter()-start)*1000)); return res
         except Exception as e:
             await logger.log(job_id=job.job_id, agent=agent, action=action, status="failed", error=str(e)); raise
     async def run(self, job, contract_path: Path, template_path: Path):
