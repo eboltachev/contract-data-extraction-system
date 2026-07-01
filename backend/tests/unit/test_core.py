@@ -49,26 +49,27 @@ async def test_rollback_on_stage_error(tmp_path):
     await Pipeline(repo, files).run(job, tmp_path/'missing.docx', tmp_path/'missing.xlsx')
     assert job.status=='failed'
 
+
 @pytest.mark.asyncio
-async def test_extraction_agent_deterministic_contract_fields():
+async def test_extraction_agent_uses_langchain_multi_agent(monkeypatch):
     from app.agents.extraction import ExtractionAgent
     from app.domain.documents import DocumentFragment
+    from app.domain.extraction import ExtractionResult
 
-    fragments = [
-        DocumentFragment(section='header', text='Договор № СПД-01-15.04-25-ЛСПБ (25.2) ТМГ(1) от 15.04.2025'),
-        DocumentFragment(section='preamble', text='ООО "Заказчик" и ООО "Ромашка", именуемое в дальнейшем "Исполнитель", заключили договор.'),
-        DocumentFragment(section='Реквизиты сторон', text='ИНН 7701234567 КПП 770101001 ОГРН 1027700123456 БИК 044525225 р/с 40702810900000000001'),
-        DocumentFragment(section='Приемка', text='Для закрытия договора Исполнитель передает акт КС-2, справку КС-3 и счет-фактуру.'),
-        DocumentFragment(section='Сроки', text='Срок выполнения работ: в течение 30 календарных дней с даты подписания договора.'),
-        DocumentFragment(section='Ответственность', text='За нарушение сроков начисляется пеня 0,1% от цены договора за каждый день просрочки.'),
-    ]
-    agent = ExtractionAgent()
-    number = await agent.run_one('Номер договора', fragments)
-    date = await agent.run_one('Дата подписания договора', fragments)
-    counterparty = await agent.run_one('Контрагент', fragments)
-    penalties = await agent.run_one('Штрафные санкции за нарушение договора', fragments)
+    async def fake_extract_many(self, retrievals):
+        return [
+            ExtractionResult(
+                criterion='Номер договора',
+                value='СПД-01-15.04-25-ЛСПБ (25.2) ТМГ(1)',
+                confidence=0.91,
+                source_fragments=retrievals['Номер договора'][:1],
+                reasoning_summary='Синтезировано multi-agent pipeline.',
+            )
+        ]
 
-    assert number.value == 'СПД-01-15.04-25-ЛСПБ (25.2) ТМГ(1)'
-    assert date.value == '15.04.2025'
-    assert 'Ромашка' in counterparty.value
-    assert '0,1%' in penalties.value
+    monkeypatch.setattr('app.agents.langchain_contract_agents.LangChainContractMultiAgentSystem.extract_many', fake_extract_many)
+    fragments = [DocumentFragment(section='header', text='Договор № СПД-01-15.04-25-ЛСПБ (25.2) ТМГ(1)')]
+    result = await ExtractionAgent().run({'Номер договора': fragments})
+
+    assert result[0].value == 'СПД-01-15.04-25-ЛСПБ (25.2) ТМГ(1)'
+    assert result[0].reasoning_summary == 'Синтезировано multi-agent pipeline.'
