@@ -1,0 +1,1 @@
+export function AgentTimeline({events}:{events:any[]}){return <div className="card"><h3>Действия агентов</h3><ol className="timeline">{events.map((e,i)=><li key={i}><b>{e.agent}</b><span>{e.action}</span></li>)}</ol></div>}
