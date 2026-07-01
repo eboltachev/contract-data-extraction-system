@@ -1,0 +1,1 @@
+export function FileUploadCard({title,accept,file,onChange}:{title:string;accept:string;file:File|null;onChange:(f:File|null)=>void}){return <div className="card"><h3>{title}</h3><label className="drop"><input type="file" accept={accept} onChange={e=>onChange(e.target.files?.[0]??null)}/><span>{file?file.name:'Выберите файл или перетащите сюда'}</span></label></div>}
