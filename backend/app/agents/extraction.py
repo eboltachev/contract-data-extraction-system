@@ -5,9 +5,11 @@ import ast
 
 from app.agents.base import BaseAgent
 from app.agents.generic_extraction import GenericEvidenceExtractor, NOT_FOUND
+from app.agents.wiki_extraction import WikiFactMatcher
 from app.core.config import settings
 from app.domain.documents import ParsedDocument
 from app.domain.extraction import ExtractionResult
+from app.domain.wiki import ContractWiki
 
 
 class ExtractionAgent(BaseAgent):
@@ -19,7 +21,12 @@ class ExtractionAgent(BaseAgent):
         parsed: ParsedDocument | None = None,
         job_id: str | None = None,
         logger=None,
+        wiki: ContractWiki | None = None,
     ) -> list[ExtractionResult]:
+        wiki_results: dict[str, ExtractionResult] = {}
+        if wiki is not None:
+            wiki_results = WikiFactMatcher(wiki).extract_many(list(retrievals.keys()))
+
         generic = GenericEvidenceExtractor(parsed=parsed, retrievals=retrievals)
         generic_results = generic.extract_many(retrievals.keys())
 
@@ -30,13 +37,8 @@ class ExtractionAgent(BaseAgent):
                 action="extract_candidates",
                 status="completed",
                 extracted=len(generic_results),
+                wiki_extracted=len(wiki_results),
             )
-
-        if _llm_disabled():
-            return [
-                _result_or_not_found(criterion, fragments, generic_results)
-                for criterion, fragments in retrievals.items()
-            ]
 
         try:
             from app.agents.langchain_contract_agents import LangChainContractMultiAgentSystem
@@ -58,7 +60,7 @@ class ExtractionAgent(BaseAgent):
             llm_results = []
 
         llm_results = [_normalize_result_value(result) for result in llm_results]
-        merged = _merge_results(retrievals, llm_results, generic_results)
+        merged = _merge_results(retrievals, llm_results, generic_results, wiki_results)
         return [merged[criterion] for criterion in retrievals.keys()]
 
 
@@ -66,13 +68,27 @@ def _merge_results(
     retrievals: dict[str, list],
     llm_results: list[ExtractionResult],
     generic_results: dict[str, ExtractionResult],
+    wiki_results: dict[str, ExtractionResult] | None = None,
 ) -> dict[str, ExtractionResult]:
     llm_by_criterion = {result.criterion: result for result in llm_results}
+    wiki_results = wiki_results or {}
     merged: dict[str, ExtractionResult] = {}
 
     for criterion, fragments in retrievals.items():
+        wiki = wiki_results.get(criterion)
         generic = generic_results.get(criterion)
         llm = llm_by_criterion.get(criterion)
+
+        # Contract-wiki fact имеет самый высокий приоритет только если он
+        # семантически совместим с критерием. Например, список приложений
+        # нельзя принимать как «перечень документов для закрытия договора».
+        if wiki is not None and wiki.confidence >= 0.75 and not _wiki_fact_conflicts_with_criterion(criterion, wiki):
+            merged[criterion] = wiki
+            continue
+
+        if _is_good(llm) and generic is not None and _same_value(llm.value, generic.value):
+            merged[criterion] = llm
+            continue
 
         # Для стабильных договорных полей evidence/rule-based результат точнее LLM:
         # LLM склонна выбирать соседние пункты, приложения и фрагменты из нерелевантных разделов.
@@ -104,6 +120,27 @@ def _merge_results(
 
     return merged
 
+
+
+def _wiki_fact_conflicts_with_criterion(criterion: str, result: ExtractionResult) -> bool:
+    normalized = criterion.lower().replace("ё", "е")
+    summary = (result.reasoning_summary or "").lower()
+    source_sections = " ".join(fragment.section or "" for fragment in result.source_fragments).lower()
+
+    closing_query = (
+        any(marker in normalized for marker in ("закрыт", "закрытие", "закрытия", "закрыва", "прием", "приемк", "сдач"))
+        and any(marker in normalized for marker in ("документ", "акт", "счет", "кс"))
+    )
+    appendices_result = "contract.appendices" in summary or "appendices" in source_sections
+    if closing_query and appendices_result:
+        return True
+
+    appendices_query = "приложен" in normalized or "список прилож" in normalized
+    acceptance_result = "contract.acceptance.documents" in summary or "acceptance" in source_sections
+    if appendices_query and acceptance_result:
+        return True
+
+    return False
 
 def _normalize_result_value(result: ExtractionResult) -> ExtractionResult:
     value = result.value
@@ -170,3 +207,7 @@ def _is_stable_contract_field(criterion: str) -> bool:
 
 def _llm_disabled() -> bool:
     return settings.LITELLM_API_KEY.strip().lower() in {"", "change_me", "none", "null"}
+
+
+def _same_value(left: str, right: str) -> bool:
+    return " ".join(str(left).lower().replace("ё", "е").split()) == " ".join(str(right).lower().replace("ё", "е").split())

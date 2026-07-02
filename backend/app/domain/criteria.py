@@ -20,3 +20,5 @@ class ExtractionPlan(BaseModel):
     query_terms: list[str] = Field(default_factory=list)
     answer_format: str = "short_text"
     allow_multiple: bool = False
+    field_key: str | None = None
+    allowed_wiki_pages: list[str] = Field(default_factory=list)

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
-from openpyxl.styles import Alignment
+from openpyxl.styles import Alignment, Font
 from openpyxl.worksheet.worksheet import Worksheet
 
 from app.core.exceptions import ValidationError
@@ -122,6 +122,8 @@ def fill_template(template: Path, output: Path, results: list[ExtractionResult])
         cell.alignment = Alignment(wrap_text=True, vertical="top")
         _fit_row_height(target_ws, criterion.row, str(cell.value))
 
+    _write_audit_sheet(wb, results)
+
     output.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output)
 
@@ -216,3 +218,54 @@ def _normalize(value: str) -> str:
     value = value.lower().replace("ё", "е")
     value = re.sub(r"[^а-яa-z0-9№%]+", " ", value)
     return re.sub(r"\s+", " ", value).strip()
+
+
+
+def _write_audit_sheet(wb: Any, results: list[ExtractionResult]) -> None:
+    title = "Проверка"
+    if title in wb.sheetnames:
+        del wb[title]
+    ws = wb.create_sheet(title=title)
+    headers = ["Критерий", "Значение", "Нормализованное значение", "Источник", "Confidence", "Статус", "Комментарий"]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    for result in results:
+        source = _source_text(result)
+        status = _status(result)
+        ws.append([
+            result.criterion,
+            result.value,
+            result.normalized_value or "",
+            source,
+            round(float(result.confidence or 0.0), 3),
+            status,
+            result.reasoning_summary or "",
+        ])
+
+    widths = {"A": 36, "B": 64, "C": 28, "D": 72, "E": 12, "F": 18, "G": 56}
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+    for row in range(2, ws.max_row + 1):
+        for col in range(1, ws.max_column + 1):
+            ws.cell(row, col).alignment = Alignment(wrap_text=True, vertical="top")
+        _fit_row_height(ws, row, str(ws.cell(row, 2).value or ""))
+
+
+def _source_text(result: ExtractionResult) -> str:
+    chunks: list[str] = []
+    for fragment in result.source_fragments[:3]:
+        clause = f", п. {fragment.clause}" if fragment.clause else ""
+        text = _cell_text(fragment.text)
+        chunks.append(f"{fragment.section or 'Документ'}{clause}: {text[:420]}")
+    return "\n---\n".join(chunks)
+
+
+def _status(result: ExtractionResult) -> str:
+    if not result.value or result.value.startswith("Не найдено"):
+        return "not_found"
+    if result.value.startswith("Требует проверки") or result.confidence < 0.6:
+        return "needs_review"
+    return "verified"

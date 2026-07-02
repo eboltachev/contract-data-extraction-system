@@ -71,7 +71,9 @@ class GenericEvidenceExtractor:
             return self._requisites()
         if any(x in key for x in ("сторон", "контрагент", "заказчик", "исполнитель", "подрядчик", "субподрядчик", "поставщик")):
             return self._parties()
-        if any(x in key for x in ("закрыва", "документ", "акт", "кс", "упд", "счет фактур", "счет-фактур")):
+        if self._is_edo_key(key):
+            return self._edo_terms()
+        if self._is_closing_documents_key(key):
             return self._closing_documents()
         if any(x in key for x in ("срок", "дата начала", "дата окончания", "период", "этап", "исполн")):
             return self._deadlines()
@@ -85,6 +87,54 @@ class GenericEvidenceExtractor:
             return self._vat()
 
         return self._generic_summary(criterion)
+
+
+    @staticmethod
+    def _is_edo_key(key: str) -> bool:
+        return any(marker in key for marker in ("эдо", "электронн документооборот", "кэп", "сбис"))
+
+    @staticmethod
+    def _is_closing_documents_key(key: str) -> bool:
+        if any(marker in key for marker in ("кс", "упд", "счет фактур", "счет-фактур")):
+            return True
+        closing_context = any(
+            marker in key
+            for marker in ("закрыва", "закрыт", "закрытие", "закрытия", "прием", "приемк", "сдач")
+        )
+        document_context = any(marker in key for marker in ("документ", "акт", "счет"))
+        return closing_context and document_context
+
+    def _edo_terms(self) -> Candidate | None:
+        items: list[str] = []
+        patterns = (
+            (
+                "Стороны согласовали электронный обмен документами через ЭДО с подписанием квалифицированной электронной подписью (КЭП).",
+                r"через\s+электронный\s+обмен\s+документами|электронн[а-я]+\s+обмен\s+документ",
+            ),
+            (
+                "Оператор ЭДО: СБИС или синхронизированные со СБИС операторы электронного документооборота.",
+                r"СБИС",
+            ),
+            (
+                "Через ЭДО допускается обмен договорами, дополнительными соглашениями, протоколами разногласий, первичными учетными документами, актами сверки, счетами-фактурами и счетами на оплату.",
+                r"договор,\s+дополнительными\s+соглашениями|первичными\s+учетными\s+документами|актами\s+сверки",
+            ),
+            (
+                "Документы по ЭДО считаются принятыми к рассмотрению только при условии направления уведомления или сообщения по электронной почте info@pridex.ru.",
+                r"info@pridex\.ru",
+            ),
+        )
+        for label, pattern in patterns:
+            if re.search(pattern, self.text, flags=re.I):
+                items.append(label)
+        if not items:
+            return None
+        return Candidate(
+            value="\n".join(f"- {item}" for item in self._deduplicate_strings(items)),
+            confidence=0.86,
+            source_fragments=self._source_fragments(("ЭДО", "КЭП", "СБИС", "info@pridex.ru")),
+            reasoning_summary="Условия ЭДО извлечены из особых условий договора.",
+        )
 
     def _contract_number(self) -> Candidate | None:
         header = self._header_fragments()

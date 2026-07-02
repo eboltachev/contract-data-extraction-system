@@ -60,6 +60,10 @@ class RetrievalAgent(BaseAgent):
                 if self._normalize(target) in section:
                     score += 2.0
 
+            for page_name in getattr(plan, "allowed_wiki_pages", []) or []:
+                if self._normalize(page_name) in section:
+                    score += 14.0
+
             if "|" in fragment.text and any(marker in self._normalize(criterion) for marker in ("реквиз", "таблиц", "контрагент")):
                 score += 4.0
 
@@ -78,9 +82,11 @@ class RetrievalAgent(BaseAgent):
 
         if self._is_header_field(criterion):
             header = self._header_fragments(fragments)
-            return criterion, self._deduplicate([*header, *ranked])[:32]
+            page_fragments = self._allowed_page_fragments(fragments, getattr(plan, "allowed_wiki_pages", []) or [])
+            return criterion, self._deduplicate([*page_fragments, *header, *ranked])[:32]
 
-        return criterion, self._deduplicate([*ranked, *base])[:36]
+        page_fragments = self._allowed_page_fragments(fragments, getattr(plan, "allowed_wiki_pages", []) or [])
+        return criterion, self._deduplicate([*page_fragments, *ranked, *base])[:36]
 
     async def run(self, plans, parsed):
         pairs = await asyncio.gather(*(self.run_one(plan, parsed.fragments) for plan in plans))
@@ -94,6 +100,17 @@ class RetrievalAgent(BaseAgent):
                 words.extend(values)
         words.extend(re.findall(r"[а-яА-Яa-zA-Z0-9№%\-/]{3,}", normalized))
         return tuple(dict.fromkeys(words))
+
+    @staticmethod
+    def _allowed_page_fragments(fragments: list[DocumentFragment], page_names: list[str]) -> list[DocumentFragment]:
+        if not page_names:
+            return []
+        normalized_pages = [RetrievalAgent._normalize(page_name) for page_name in page_names]
+        return [
+            fragment
+            for fragment in fragments
+            if any(page in RetrievalAgent._normalize(fragment.section or "") for page in normalized_pages)
+        ][:20]
 
     @staticmethod
     def _expand_neighbors(

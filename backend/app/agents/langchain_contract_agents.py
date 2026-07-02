@@ -6,8 +6,19 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+try:
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_openai import ChatOpenAI
+except ModuleNotFoundError:  # optional dependency for offline tests / deterministic mode
+    ChatOpenAI = None
+
+    class HumanMessage:  # type: ignore[no-redef]
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    class SystemMessage:  # type: ignore[no-redef]
+        def __init__(self, content: str) -> None:
+            self.content = content
 
 from app.core.config import settings
 from app.domain.documents import DocumentFragment
@@ -83,6 +94,8 @@ class LangChainContractMultiAgentSystem:
         self.model = self._build_model() if self._llm_enabled else None
 
     def _build_model(self):
+        if ChatOpenAI is None:
+            raise RuntimeError("LangChain dependencies are not installed")
         return ChatOpenAI(
             model=settings.LLM_MODEL,
             base_url=settings.LITELLM_BASE_URL,

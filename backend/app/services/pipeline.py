@@ -4,6 +4,7 @@ import asyncio
 import time
 from pathlib import Path
 
+from app.agents.contract_wiki_ingestion import ContractWikiIngestionAgent
 from app.agents.criteria_planning import CriteriaPlanningAgent
 from app.agents.document_parsing import DocumentParsingAgent
 from app.agents.excel_filling import ExcelFillingAgent
@@ -93,10 +94,20 @@ class Pipeline:
                 job,
                 "StructureAnalysisAgent",
                 "Анализ структуры договора",
-                25,
+                20,
                 logger,
                 lambda: StructureAnalysisAgent().run(parsed),
             )
+
+            wiki = await self.stage(
+                job,
+                "ContractWikiIngestionAgent",
+                "Построение contract-wiki и source map",
+                30,
+                logger,
+                lambda: ContractWikiIngestionAgent().run(parsed, root / "working" / "contract_wiki"),
+            )
+            wiki_parsed = wiki.to_parsed_document()
 
             _, _, _, criteria = read_criteria(template_path)
 
@@ -104,7 +115,7 @@ class Pipeline:
                 job,
                 "CriteriaPlanningAgent",
                 "Планирование извлечения критериев",
-                35,
+                40,
                 logger,
                 lambda: CriteriaPlanningAgent().run(criteria),
             )
@@ -113,22 +124,23 @@ class Pipeline:
                 job,
                 "RetrievalAgent",
                 "Поиск релевантных фрагментов",
-                50,
+                55,
                 logger,
-                lambda: RetrievalAgent().run(plans, parsed),
+                lambda: RetrievalAgent().run(plans, wiki_parsed),
             )
 
             results = await self.stage(
                 job,
                 "ExtractionAgent",
                 "Извлечение значений критериев",
-                70,
+                75,
                 logger,
                 lambda: ExtractionAgent().run(
                     retrievals,
-                    parsed=parsed,
+                    parsed=wiki_parsed,
                     job_id=job.job_id,
                     logger=logger,
+                    wiki=wiki,
                 ),
             )
 
@@ -136,7 +148,7 @@ class Pipeline:
                 job,
                 "ValidationAgent",
                 "Проверка извлеченных значений",
-                85,
+                88,
                 logger,
                 lambda: ValidationAgent().run(results),
             )
@@ -146,7 +158,7 @@ class Pipeline:
                 job,
                 "ExcelFillingAgent",
                 "Заполнение Excel-шаблона",
-                95,
+                96,
                 logger,
                 lambda: ExcelFillingAgent().run(template_path, out, valid),
             )
