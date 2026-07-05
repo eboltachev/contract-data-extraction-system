@@ -7,11 +7,14 @@ services:
       - "8000"
     volumes:
       - job_storage:/storage/jobs
+    restart: unless-stopped
   frontend:
     build: ./frontend
     ports:
       - "6002:80"
     depends_on:
       - backend
+    restart: unless-stopped
+
 volumes:
   job_storage:
